@@ -7,6 +7,8 @@
 
     <application
         android:allowBackup="true"
+        android:icon="@drawable/ic_ai_photo_logo"
+android:roundIcon="@drawable/ic_ai_photo_logo"
         android:label="AI Photo Clear 2K"
         android:theme="@style/Theme.AppCompat.NoActionBar">
         <activity
