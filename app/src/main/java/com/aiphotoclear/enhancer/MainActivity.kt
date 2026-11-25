@@ -7,7 +7,6 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.*
 import android.graphics.drawable.GradientDrawable
-import android.media.FaceDetector
 import android.net.Uri
 import android.os.*
 import android.provider.MediaStore
@@ -194,10 +193,11 @@ class MainActivity : AppCompatActivity() {
     private var originalBitmap: Bitmap? = null
     private var enhancedBitmap: Bitmap? = null
 
+    // 4 Clean Independent Sliders (0 to 100)
     private var colorBoostVal = 35
     private var faceBeautyVal = 65
     private var brightnessVal = 50
-    private var lipColorVal = 25
+    private var contrastVal = 25
 
     private lateinit var beforeAfterView: BeforeAfterView
     private lateinit var uploadDashboard: LinearLayout
@@ -253,7 +253,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val title = TextView(this).apply {
-            text = "✨ AI Photo Clear 2K Pro"
+            text = "✨ AI Photo Clear 2K"
             textSize = 18f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
@@ -343,7 +343,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val uploadSubText = TextView(this).apply {
-            text = "Face, Neck & Hands Glow • Lip Color • 2K Clear"
+            text = "Color • Face, Neck & Hands Glow • Light • Contrast"
             textSize = 12f
             setTextColor(Color.parseColor("#94A3B8"))
             gravity = Gravity.CENTER
@@ -393,7 +393,7 @@ class MainActivity : AppCompatActivity() {
             indeterminateTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#38BDF8"))
         }
         val statusTxt = TextView(this).apply {
-            text = "2K AI Face, Neck & Hands Glow प्रोसेस हो रहा है..."
+            text = "2K AI Studio प्रोसेस हो रहा है..."
             textSize = 14f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
@@ -405,6 +405,7 @@ class MainActivity : AppCompatActivity() {
 
         root.addView(centerFrame)
 
+        // 4 CLEAN SLIDERS PANEL
         editorBottomPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
@@ -413,6 +414,7 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(-1, -2)
         }
 
+        // Slider 1: Color Boost
         editorBottomPanel.addView(
             createControlSlider("🎨 Color Boost", "#38BDF8", colorBoostVal) { newVal ->
                 colorBoostVal = newVal
@@ -420,6 +422,7 @@ class MainActivity : AppCompatActivity() {
             }
         )
 
+        // Slider 2: Face Beauty (Face, Neck & Hands Glow)
         editorBottomPanel.addView(
             createControlSlider("✨ Face Beauty (Glow)", "#F472B6", faceBeautyVal) { newVal ->
                 faceBeautyVal = newVal
@@ -427,6 +430,7 @@ class MainActivity : AppCompatActivity() {
             }
         )
 
+        // Slider 3: Light / Brightness
         editorBottomPanel.addView(
             createControlSlider("☀️ Light / Brightness", "#FACC15", brightnessVal) { newVal ->
                 brightnessVal = newVal
@@ -434,9 +438,10 @@ class MainActivity : AppCompatActivity() {
             }
         )
 
+        // Slider 4: Contrast / Depth (Replaces Lips slider with clean DSLR Depth)
         editorBottomPanel.addView(
-            createControlSlider("💋 Lip Color (Light Pink)", "#FB7185", lipColorVal) { newVal ->
-                lipColorVal = newVal
+            createControlSlider("🌅 Contrast / Depth", "#A78BFA", contrastVal) { newVal ->
+                contrastVal = newVal
                 if (originalBitmap != null) runNaturalAIEnhance()
             }
         )
@@ -609,16 +614,16 @@ class MainActivity : AppCompatActivity() {
             val beautyFactor = faceBeautyVal / 100f
             val colorFactor = colorBoostVal / 100f
             val brightShift = (brightnessVal - 50) * 0.90f
-            val lipFactor = lipColorVal / 100f
+            val contrastFactor = contrastVal / 100f
             val smoothThreshold = (14 + (42 * beautyFactor)).roundToInt()
 
-            val processed = applyFaceSampledSkinStudioEngine(
+            val processed = applySpotlessFourControlEngine(
                 upscaled,
                 smoothThreshold,
                 beautyFactor,
                 colorFactor,
                 brightShift,
-                lipFactor
+                contrastFactor
             )
 
             mainHandler.post {
@@ -631,187 +636,49 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun detectFaceOvalRegions(bmp: Bitmap): List<RectF> {
-        val w = bmp.width
-        val h = bmp.height
-        val detectScale = min(1.0f, 640f / max(w, h))
-        var dw = (w * detectScale).roundToInt()
-        if (dw % 2 != 0) dw += 1
-        val dh = (h * detectScale).roundToInt()
+    // Yellow-safe Skin Weight (0..1): Works evenly on Face, Neck & Hands while keeping yellow/colored shirts 100% untouched!
+    private fun computeSkinWeight(r: Float, g: Float, b: Float): Float {
+        if (!(r > g && g > b)) return 0f
+        val rSafe = max(r, 1f)
+        val gr = g / rSafe   // skin: ~0.55–0.80, yellow shirt: ~0.85–1.0
+        val br = b / rSafe   // skin: ~0.32–0.80, yellow/orange shirt: < 0.30
 
-        val small = Bitmap.createScaledBitmap(bmp, dw, dh, true)
-        val rgb565 = small.copy(Bitmap.Config.RGB_565, false)
-        small.recycle()
+        val yellowGuard = ((0.88f - gr) / 0.12f).coerceIn(0f, 1f)
+        val redGuard = ((gr - 0.42f) / 0.10f).coerceIn(0f, 1f)
+        val blueGuard = ((br - 0.28f) / 0.12f).coerceIn(0f, 1f)
+        // Lowered lumGuard to 42f so shaded Neck & Hands get full, even glow just like the face!
+        val lumGuard = ((r - 42f) / 36f).coerceIn(0f, 1f)
 
-        val maxFaces = 5
-        val faces = arrayOfNulls<FaceDetector.Face>(maxFaces)
-        val detector = FaceDetector(dw, dh, maxFaces)
-        val foundCount = detector.findFaces(rgb565, faces)
-        rgb565.recycle()
-
-        val invScaleX = w.toFloat() / dw.toFloat()
-        val invScaleY = h.toFloat() / dh.toFloat()
-        val regions = mutableListOf<RectF>()
-
-        for (i in 0 until foundCount) {
-            val f = faces[i] ?: continue
-            val mid = PointF()
-            f.getMidPoint(mid)
-            val eyeDist = f.eyesDistance()
-            if (eyeDist > 4f) {
-                val cx = mid.x * invScaleX
-                val cy = (mid.y + eyeDist * 0.28f) * invScaleY
-                val rx = (eyeDist * 1.45f) * invScaleX
-                val ry = (eyeDist * 1.95f) * invScaleY
-                regions.add(RectF(cx - rx, cy - ry, cx + rx, cy + ry))
-            }
-        }
-        return regions
+        return (yellowGuard * redGuard * blueGuard * lumGuard).coerceIn(0f, 1f)
     }
 
-    private fun applyFaceSampledSkinStudioEngine(
+    private fun applySpotlessFourControlEngine(
         src: Bitmap,
         threshold: Int,
         beautyFactor: Float,
         colorFactor: Float,
         brightShift: Float,
-        lipFactor: Float
+        contrastFactor: Float
     ): Bitmap {
         val w = src.width
         val h = src.height
         val pixels = IntArray(w * h)
         src.getPixels(pixels, 0, w, 0, 0, w, h)
-
-        val faceRegions = detectFaceOvalRegions(src)
-
-        val faceRegionMask = FloatArray(w * h)
-        var sumCb = 0f
-        var sumCr = 0f
-        var sumHue = 0f
-        var sampleCount = 0
-
-        for (rect in faceRegions) {
-            val cx = rect.centerX()
-            val cy = rect.centerY()
-            val rx = rect.width() / 2f
-            val ry = rect.height() / 2f
-            val minX = max(0, rect.left.toInt())
-            val maxX = min(w - 1, rect.right.toInt())
-            val minY = max(0, rect.top.toInt())
-            val maxY = min(h - 1, rect.bottom.toInt())
-
-            for (y in minY..maxY) {
-                val dy = (y - cy) / ry
-                val dy2 = dy * dy
-                if (dy2 >= 1f) continue
-                val row = y * w
-                for (x in minX..maxX) {
-                    val dx = (x - cx) / rx
-                    val dist = sqrt(dx * dx + dy2)
-                    if (dist < 1f) {
-                        val weight = ((1f - dist) / 0.35f).coerceIn(0f, 1f)
-                        if (weight > faceRegionMask[row + x]) {
-                            faceRegionMask[row + x] = weight
-                        }
-                        if (dist < 0.55f && (x + y) % 3 == 0) {
-                            val c = pixels[row + x]
-                            val r = Color.red(c).toFloat()
-                            val g = Color.green(c).toFloat()
-                            val b = Color.blue(c).toFloat()
-                            val lum = 0.299f * r + 0.587f * g + 0.114f * b
-                            if (lum in 55f..215f && r > g && g > b) {
-                                val cb = 128f - 0.168736f * r - 0.331264f * g + 0.5f * b
-                                val cr = 128f + 0.5f * r - 0.418688f * g - 0.081312f * b
-                                val maxC = max(r, max(g, b))
-                                val minC = min(r, min(g, b))
-                                val delta = maxC - minC
-                                val hue = if (delta > 0f) 60f * (((g - b) / delta) % 6f) else 0f
-                                if (hue in 3f..26f) {
-                                    sumCb += cb
-                                    sumCr += cr
-                                    sumHue += hue
-                                    sampleCount++
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        val refCb = if (sampleCount > 20) sumCb / sampleCount else 108f
-        val refCr = if (sampleCount > 20) sumCr / sampleCount else 148f
-        val refHue = if (sampleCount > 20) sumHue / sampleCount else 15f
-
-        val rawSkinMask = FloatArray(w * h)
-        for (i in pixels.indices) {
-            val c = pixels[i]
-            val r = Color.red(c).toFloat()
-            val g = Color.green(c).toFloat()
-            val b = Color.blue(c).toFloat()
-
-            val maxC = max(r, max(g, b))
-            val minC = min(r, min(g, b))
-            val delta = maxC - minC
-            val sat = if (maxC > 0f) delta / maxC else 0f
-            val hue = when {
-                delta == 0f -> 0f
-                maxC == r -> 60f * (((g - b) / delta) % 6f)
-                maxC == g -> 60f * (((b - r) / delta) + 2f)
-                else -> 60f * (((r - g) / delta) + 4f)
-            }.let { if (it < 0f) it + 360f else it }
-
-            val cb = 128f - 0.168736f * r - 0.331264f * g + 0.5f * b
-            val cr = 128f + 0.5f * r - 0.418688f * g - 0.081312f * b
-
-            val hueDiff = abs(hue - refHue)
-            val chromaDist = sqrt((cb - refCb).pow(2) + (cr - refCr).pow(2))
-
-            if (hue in 3f..25f && sat in 0.12f..0.58f && r > 48f && hueDiff < 11f && chromaDist < 22f) {
-                val hScore = 1f - (hueDiff / 11f).coerceIn(0f, 1f)
-                val cScore = 1f - (chromaDist / 22f).coerceIn(0f, 1f)
-                rawSkinMask[i] = max(faceRegionMask[i], (hScore * cScore).coerceIn(0f, 1f))
-            } else {
-                rawSkinMask[i] = if (r > 50f) faceRegionMask[i] * 0.85f else 0f
-            }
-        }
-
-        val skinMask = FloatArray(w * h)
-        val maskRad = 5
-        for (y in 0 until h) {
-            val row = y * w
-            for (x in 0 until w) {
-                var sum = 0f
-                var cnt = 0
-                var dy = -maskRad
-                while (dy <= maskRad) {
-                    val ny = (y + dy).coerceIn(0, h - 1) * w
-                    var dx = -maskRad
-                    while (dx <= maskRad) {
-                        val nx = (x + dx).coerceIn(0, w - 1)
-                        sum += rawSkinMask[ny + nx]
-                        cnt++
-                        dx += 2
-                    }
-                    dy += 2
-                }
-                skinMask[row + x] = sum / cnt
-            }
-        }
-
         val smoothPixels = pixels.copyOf()
+
+        // Pass 1: Edge-Preserving Skin Smoothing (Only on Face, Neck & Hands)
         val neighborOffsets = intArrayOf(-w, w, -1, 1, -w - 1, -w + 1, w - 1, w + 1)
         if (beautyFactor > 0.01f) {
             for (y in 1 until h - 1) {
                 val row = y * w
                 for (x in 1 until w - 1) {
                     val idx = row + x
-                    if (skinMask[idx] <= 0.08f) continue
-
                     val c = pixels[idx]
                     val cR = Color.red(c)
                     val cG = Color.green(c)
                     val cB = Color.blue(c)
+
+                    if (computeSkinWeight(cR.toFloat(), cG.toFloat(), cB.toFloat()) <= 0.05f) continue
 
                     var sumR = cR * 2
                     var sumG = cG * 2
@@ -836,7 +703,10 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // Pass 2: 4 Clean Controls (Color Boost + Spotless Face/Neck/Hands Glow + Light + Contrast)
         val outPixels = IntArray(w * h)
+        val contrastMult = 1f + (contrastFactor * 0.42f)
+
         for (y in 0 until h) {
             val row = y * w
             for (x in 0 until w) {
@@ -846,10 +716,10 @@ class MainActivity : AppCompatActivity() {
                 var g = Color.green(c).toFloat()
                 var b = Color.blue(c).toFloat()
 
-                val sWeight = skinMask[idx]
-                val fMask = faceRegionMask[idx]
+                val skinWeight = computeSkinWeight(r, g, b)
 
-                val clarityMask = (1f - sWeight * 0.85f).coerceIn(0f, 1f)
+                // Gentle 2K edge clarity on eyes, hair & clothes
+                val clarityMask = (1f - skinWeight * 0.85f).coerceIn(0f, 1f)
                 if (clarityMask > 0.1f && y in 1 until h - 1 && x in 1 until w - 1) {
                     val top = smoothPixels[idx - w]
                     val bot = smoothPixels[idx + w]
@@ -859,71 +729,47 @@ class MainActivity : AppCompatActivity() {
                     val avgG = (Color.green(top) + Color.green(bot) + Color.green(left) + Color.green(right)) * 0.25f
                     val avgB = (Color.blue(top) + Color.blue(bot) + Color.blue(left) + Color.blue(right)) * 0.25f
 
-                    r += (r - avgR) * (0.22f * clarityMask)
-                    g += (g - avgG) * (0.22f * clarityMask)
-                    b += (b - avgB) * (0.22f * clarityMask)
+                    r += (r - avgR) * (0.24f * clarityMask)
+                    g += (g - avgG) * (0.24f * clarityMask)
+                    b += (b - avgB) * (0.24f * clarityMask)
                 }
 
-                var lipWeight = 0.0f
-                if (fMask > 0.05f || sWeight > 0.1f) {
-                    val maxC = max(r, max(g, b))
-                    val minC = min(r, min(g, b))
-                    val delta = maxC - minC
-                    val sat = if (maxC > 0f) delta / maxC else 0f
-                    val hue = when {
-                        delta == 0f -> 0f
-                        maxC == r -> 60f * (((g - b) / delta) % 6f)
-                        maxC == g -> 60f * (((b - r) / delta) + 2f)
-                        else -> 60f * (((r - g) / delta) + 4f)
-                    }.let { if (it < 0f) it + 360f else it }
-
-                    if ((hue <= 14f || hue >= 340f) && sat in 0.20f..0.75f && r > 65f) {
-                        val regionBoost = if (faceRegions.isNotEmpty()) fMask else 1f
-                        lipWeight = (((sat - 0.18f) / 0.35f).coerceIn(0f, 1f)) * regionBoost
-                    }
-                }
-
-                if (beautyFactor > 0.01f && sWeight > 0.03f && lipWeight < 0.35f) {
-                    val glowStrength = (beautyFactor * sWeight * (1f - lipWeight)).coerceIn(0f, 1f)
-                    val gamma = 1.0f - (glowStrength * 0.32f)
+                // Control 2: Spotless Face, Neck & Hands Glow (Zero Lip tint, Zero Face or Shirt blotches!)
+                if (beautyFactor > 0.01f && skinWeight > 0.02f) {
+                    val glowStrength = (beautyFactor * skinWeight).coerceIn(0f, 1f)
+                    val gamma = 1.0f - (glowStrength * 0.34f)
                     var nr = 255f * (r.coerceIn(0f, 255f) / 255f).pow(gamma)
                     var ng = 255f * (g.coerceIn(0f, 255f) / 255f).pow(gamma)
                     var nb = 255f * (b.coerceIn(0f, 255f) / 255f).pow(gamma)
 
-                    val screenFactor = (glowStrength * 0.22f).coerceAtMost(0.22f)
+                    val screenFactor = (glowStrength * 0.24f).coerceAtMost(0.22f)
                     nr += (255f - nr) * screenFactor
                     ng += (255f - ng) * (screenFactor * 1.03f)
-                    nb += (255f - nb) * (screenFactor * 1.15f)
+                    nb += (255f - nb) * (screenFactor * 1.16f)
 
                     r = nr
                     g = ng
                     b = nb
                 }
 
-                if (lipWeight > 0.10f) {
-                    val lipLum = 0.299f * r + 0.587f * g + 0.114f * b
-                    val baseR = lipLum + 14f
-                    val baseG = lipLum - 4f
-                    val baseB = lipLum - 2f
-                    val pinkR = (baseR + lipFactor * 36f).coerceIn(0f, 255f)
-                    val pinkG = (baseG - lipFactor * 10f).coerceIn(0f, 255f)
-                    val pinkB = (baseB + lipFactor * 12f).coerceIn(0f, 255f)
-
-                    val blend = (lipWeight * 0.65f).coerceIn(0f, 0.85f)
-                    r += (pinkR - r) * blend
-                    g += (pinkG - g) * blend
-                    b += (pinkB - b) * blend
-                }
-
+                // Control 1: Color Boost (Rich clothes & background without yellowing skin)
                 if (colorFactor > 0.01f) {
                     val gray = 0.299f * r + 0.587f * g + 0.114f * b
-                    val boostMask = (1f - max(sWeight * 0.85f, lipWeight)).coerceIn(0f, 1f)
+                    val boostMask = 1f - (skinWeight * 0.90f)
                     val satBoost = 1f + (colorFactor * 0.50f * boostMask)
                     r = gray + (r - gray) * satBoost
                     g = gray + (g - gray) * satBoost
                     b = gray + (b - gray) * satBoost
                 }
 
+                // Control 4: Contrast / Depth (Deep DSLR-style contrast around mid-tones)
+                if (contrastFactor > 0.01f) {
+                    r = ((r - 128f) * contrastMult) + 128f
+                    g = ((g - 128f) * contrastMult) + 128f
+                    b = ((b - 128f) * contrastMult) + 128f
+                }
+
+                // Control 3: Light / Brightness
                 r += brightShift
                 g += brightShift
                 b += brightShift
