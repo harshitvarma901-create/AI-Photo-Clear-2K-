@@ -28,6 +28,40 @@ class BeforeAfterView(context: Context) : View(context) {
     var afterBitmap: Bitmap? = null
     private var sliderFraction = 0.5f
 
+    private var zoomScale = 1.0f
+    private var panX = 0f
+    private var panY = 0f
+    private var lastTouchX = 0f
+    private var lastTouchY = 0f
+    private var isDraggingSlider = false
+
+    private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+        override fun onScale(detector: ScaleGestureDetector): Boolean {
+            zoomScale = (zoomScale * detector.scaleFactor).coerceIn(1.0f, 4.5f)
+            if (zoomScale <= 1.02f) {
+                zoomScale = 1.0f
+                panX = 0f
+                panY = 0f
+            }
+            invalidate()
+            return true
+        }
+    })
+
+    private val gestureDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
+        override fun onDoubleTap(e: MotionEvent): Boolean {
+            if (zoomScale > 1.2f) {
+                resetZoom()
+            } else {
+                zoomScale = 2.5f
+                panX = (width / 2f - e.x) * 1.2f
+                panY = (height / 2f - e.y) * 1.2f
+                invalidate()
+            }
+            return true
+        }
+    })
+
     private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         strokeWidth = 5f
@@ -39,7 +73,7 @@ class BeforeAfterView(context: Context) : View(context) {
     }
     private val arrowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.parseColor("#111116")
-        textSize = 30f
+        textSize = 28f
         textAlign = Paint.Align.CENTER
         typeface = Typeface.DEFAULT_BOLD
     }
@@ -52,6 +86,13 @@ class BeforeAfterView(context: Context) : View(context) {
         typeface = Typeface.DEFAULT_BOLD
     }
 
+    fun resetZoom() {
+        zoomScale = 1.0f
+        panX = 0f
+        panY = 0f
+        invalidate()
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val after = afterBitmap ?: return
@@ -59,49 +100,88 @@ class BeforeAfterView(context: Context) : View(context) {
 
         val viewW = width.toFloat()
         val viewH = height.toFloat()
-        val scale = min(viewW / after.width, viewH / after.height)
-        val drawW = after.width * scale
-        val drawH = after.height * scale
-        val left = (viewW - drawW) / 2f
-        val top = (viewH - drawH) / 2f
+        val baseScale = min(viewW / after.width, viewH / after.height)
+        val drawW = after.width * baseScale * zoomScale
+        val drawH = after.height * baseScale * zoomScale
+
+        val maxPanX = max(0f, (drawW - viewW) / 2f + 100f)
+        val maxPanY = max(0f, (drawH - viewH) / 2f + 100f)
+        panX = panX.coerceIn(-maxPanX, maxPanX)
+        panY = panY.coerceIn(-maxPanY, maxPanY)
+
+        val left = (viewW - drawW) / 2f + panX
+        val top = (viewH - drawH) / 2f + panY
         val destRect = RectF(left, top, left + drawW, top + drawH)
 
         canvas.drawBitmap(after, null, destRect, null)
 
-        val splitX = left + (drawW * sliderFraction)
+        val splitX = viewW * sliderFraction
         canvas.save()
-        canvas.clipRect(left, top, splitX, top + drawH)
+        canvas.clipRect(0f, 0f, splitX, viewH)
         canvas.drawBitmap(before, null, destRect, null)
         canvas.restore()
 
-        canvas.drawLine(splitX, top, splitX, top + drawH, linePaint)
-        val cy = top + drawH / 2f
-        canvas.drawCircle(splitX, cy, 34f, handlePaint)
+        canvas.drawLine(splitX, 0f, splitX, viewH, linePaint)
+        val cy = viewH / 2f
+        canvas.drawCircle(splitX, cy, 36f, handlePaint)
         canvas.drawText("◀▶", splitX, cy + 10f, arrowPaint)
 
-        canvas.drawRoundRect(left + 20f, top + 20f, left + 148f, top + 60f, 14f, 14f, badgePaint)
-        canvas.drawText("BEFORE", left + 34f, top + 48f, badgeTextPaint)
+        canvas.drawRoundRect(24f, 24f, 152f, 64f, 14f, 14f, badgePaint)
+        canvas.drawText("BEFORE", 38f, 52f, badgeTextPaint)
 
-        canvas.drawRoundRect(left + drawW - 196f, top + 20f, left + drawW - 20f, top + 60f, 14f, 14f, badgePaint)
+        val zoomLabel = if (zoomScale > 1.05f) String.format(Locale.US, "AI 2K • %.1fx", zoomScale) else "AI 2K PRO"
+        val badgeW = if (zoomScale > 1.05f) 230f else 180f
+        canvas.drawRoundRect(viewW - badgeW - 24f, 24f, viewW - 24f, 64f, 14f, 14f, badgePaint)
         badgeTextPaint.color = Color.parseColor("#38BDF8")
-        canvas.drawText("AI 2K PRO", left + drawW - 180f, top + 48f, badgeTextPaint)
+        canvas.drawText(zoomLabel, viewW - badgeW - 8f, 52f, badgeTextPaint)
         badgeTextPaint.color = Color.WHITE
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (afterBitmap == null) return false
-        when (event.action) {
-            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
-                val after = afterBitmap ?: return true
-                val scale = min(width.toFloat() / after.width, height.toFloat() / after.height)
-                val drawW = after.width * scale
-                val left = (width.toFloat() - drawW) / 2f
-                sliderFraction = ((event.x - left) / drawW).coerceIn(0.02f, 0.98f)
+        parent?.requestDisallowInterceptTouchEvent(true)
+        gestureDetector.onTouchEvent(event)
+        scaleDetector.onTouchEvent(event)
+
+        if (event.pointerCount > 1) {
+            isDraggingSlider = false
+            return true
+        }
+
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                lastTouchX = event.x
+                lastTouchY = event.y
+                val splitX = width.toFloat() * sliderFraction
+                isDraggingSlider = if (zoomScale > 1.05f) {
+                    abs(event.x - splitX) < 60f
+                } else {
+                    true
+                }
+                if (isDraggingSlider) {
+                    sliderFraction = (event.x / width.toFloat()).coerceIn(0.03f, 0.97f)
+                    invalidate()
+                }
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (scaleDetector.isInProgress) return true
+                if (isDraggingSlider) {
+                    sliderFraction = (event.x / width.toFloat()).coerceIn(0.03f, 0.97f)
+                } else if (zoomScale > 1.05f) {
+                    panX += (event.x - lastTouchX)
+                    panY += (event.y - lastTouchY)
+                }
+                lastTouchX = event.x
+                lastTouchY = event.y
                 invalidate()
                 return true
             }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                isDraggingSlider = false
+            }
         }
-        return super.onTouchEvent(event)
+        return true
     }
 }
 
@@ -113,15 +193,18 @@ class MainActivity : AppCompatActivity() {
     private var originalBitmap: Bitmap? = null
     private var enhancedBitmap: Bitmap? = null
 
+    // 4 Separate Independent Sliders (0 to 100)
     private var colorBoostVal = 35
     private var faceBeautyVal = 65
     private var brightnessVal = 50
+    private var clarityVal = 55
 
     private lateinit var beforeAfterView: BeforeAfterView
     private lateinit var uploadDashboard: LinearLayout
     private lateinit var editorBottomPanel: LinearLayout
     private lateinit var progressOverlay: LinearLayout
     private lateinit var btnTopChange: TextView
+    private lateinit var btnResetZoom: TextView
     private lateinit var rvRecentPhotos: RecyclerView
 
     private val recentUris = mutableListOf<Uri>()
@@ -165,13 +248,13 @@ class MainActivity : AppCompatActivity() {
 
         val topBar = RelativeLayout(this).apply {
             setBackgroundColor(Color.parseColor("#111118"))
-            setPadding(dp(18), dp(38), dp(18), dp(14))
+            setPadding(dp(16), dp(38), dp(16), dp(12))
             layoutParams = LinearLayout.LayoutParams(-1, -2)
         }
 
         val title = TextView(this).apply {
             text = "✨ AI Photo Clear 2K"
-            textSize = 19f
+            textSize = 18f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
             layoutParams = RelativeLayout.LayoutParams(-2, -2).apply {
@@ -180,23 +263,41 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        val topButtons = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = RelativeLayout.LayoutParams(-2, -2).apply {
+                addRule(RelativeLayout.ALIGN_PARENT_END)
+                addRule(RelativeLayout.CENTER_VERTICAL)
+            }
+        }
+
+        btnResetZoom = TextView(this).apply {
+            visibility = View.GONE
+            text = "1x Zoom"
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#38BDF8"))
+            background = roundBg("#1A2436", 14, "#38BDF8")
+            setPadding(dp(10), dp(6), dp(10), dp(6))
+            layoutParams = LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(8) }
+            setOnClickListener { beforeAfterView.resetZoom() }
+        }
+
         btnTopChange = TextView(this).apply {
             visibility = View.GONE
-            text = "Change Photo"
+            text = "Change"
             textSize = 12f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
             background = roundBg("#232332", 14, "#3F3F55")
             setPadding(dp(12), dp(6), dp(12), dp(6))
-            layoutParams = RelativeLayout.LayoutParams(-2, -2).apply {
-                addRule(RelativeLayout.ALIGN_PARENT_END)
-                addRule(RelativeLayout.CENTER_VERTICAL)
-            }
             setOnClickListener { pickImageLauncher.launch("image/*") }
         }
 
+        topButtons.addView(btnResetZoom)
+        topButtons.addView(btnTopChange)
         topBar.addView(title)
-        topBar.addView(btnTopChange)
+        topBar.addView(topButtons)
         root.addView(topBar)
 
         val centerFrame = FrameLayout(this).apply {
@@ -242,7 +343,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val uploadSubText = TextView(this).apply {
-            text = "Color Boost • Face Beauty • Brightness • 2K Clear"
+            text = "Color • Face Glow • Brightness • HD Clarity"
             textSize = 12f
             setTextColor(Color.parseColor("#94A3B8"))
             gravity = Gravity.CENTER
@@ -292,7 +393,7 @@ class MainActivity : AppCompatActivity() {
             indeterminateTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#38BDF8"))
         }
         val statusTxt = TextView(this).apply {
-            text = "2K AI Enhance प्रोसेस हो रहा है..."
+            text = "2K AI Studio प्रोसेस हो रहा है..."
             textSize = 14f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
@@ -304,14 +405,16 @@ class MainActivity : AppCompatActivity() {
 
         root.addView(centerFrame)
 
+        // 3. COMPACT 4-SLIDER BOTTOM PANEL
         editorBottomPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
             setBackgroundColor(Color.parseColor("#111118"))
-            setPadding(dp(18), dp(12), dp(18), dp(24))
+            setPadding(dp(16), dp(8), dp(16), dp(20))
             layoutParams = LinearLayout.LayoutParams(-1, -2)
         }
 
+        // Slider 1: Color Boost
         editorBottomPanel.addView(
             createControlSlider("🎨 Color Boost", "#38BDF8", colorBoostVal) { newVal ->
                 colorBoostVal = newVal
@@ -319,23 +422,33 @@ class MainActivity : AppCompatActivity() {
             }
         )
 
+        // Slider 2: Face Beauty (Face Glow)
         editorBottomPanel.addView(
-            createControlSlider("✨ Face Beauty", "#F472B6", faceBeautyVal) { newVal ->
+            createControlSlider("✨ Face Beauty (Glow)", "#F472B6", faceBeautyVal) { newVal ->
                 faceBeautyVal = newVal
                 if (originalBitmap != null) runNaturalAIEnhance()
             }
         )
 
+        // Slider 3: Brightness (Light)
         editorBottomPanel.addView(
-            createControlSlider("☀️ Brightness", "#FACC15", brightnessVal) { newVal ->
+            createControlSlider("☀️ Light / Brightness", "#FACC15", brightnessVal) { newVal ->
                 brightnessVal = newVal
+                if (originalBitmap != null) runNaturalAIEnhance()
+            }
+        )
+
+        // Slider 4: HD Clarity / Sharpness
+        editorBottomPanel.addView(
+            createControlSlider("💎 HD Clarity (2K Sharp)", "#34D399", clarityVal) { newVal ->
+                clarityVal = newVal
                 if (originalBitmap != null) runNaturalAIEnhance()
             }
         )
 
         val actionRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(8) }
+            layoutParams = LinearLayout.LayoutParams(-1, dp(44)).apply { topMargin = dp(6) }
         }
 
         val btnNewUpload = TextView(this).apply {
@@ -376,7 +489,7 @@ class MainActivity : AppCompatActivity() {
     ): LinearLayout {
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(4) }
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(2) }
         }
 
         val topRow = RelativeLayout(this).apply {
@@ -385,14 +498,14 @@ class MainActivity : AppCompatActivity() {
 
         val tvName = TextView(this).apply {
             text = label
-            textSize = 12f
+            textSize = 11.5f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.parseColor("#E2E8F0"))
         }
 
         val tvVal = TextView(this).apply {
             text = "$initialProgress%"
-            textSize = 12f
+            textSize = 11.5f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.parseColor(accentHex))
             layoutParams = RelativeLayout.LayoutParams(-2, -2).apply {
@@ -409,7 +522,7 @@ class MainActivity : AppCompatActivity() {
             progress = initialProgress
             progressTintList = android.content.res.ColorStateList.valueOf(Color.parseColor(accentHex))
             thumbTintList = android.content.res.ColorStateList.valueOf(Color.parseColor(accentHex))
-            layoutParams = LinearLayout.LayoutParams(-1, dp(32))
+            layoutParams = LinearLayout.LayoutParams(-1, dp(26))
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
                     tvVal.text = "$p%"
@@ -474,6 +587,8 @@ class MainActivity : AppCompatActivity() {
                 beforeAfterView.visibility = View.VISIBLE
                 editorBottomPanel.visibility = View.VISIBLE
                 btnTopChange.visibility = View.VISIBLE
+                btnResetZoom.visibility = View.VISIBLE
+                beforeAfterView.resetZoom()
                 beforeAfterView.beforeBitmap = bmp
                 beforeAfterView.afterBitmap = bmp
                 beforeAfterView.invalidate()
@@ -497,49 +612,45 @@ class MainActivity : AppCompatActivity() {
             val upscaled = Bitmap.createScaledBitmap(src, newW, newH, true)
 
             val beautyFactor = faceBeautyVal / 100f
-            val smoothThreshold = (10 + (32 * beautyFactor)).roundToInt()
-            val detailAmount = 0.26f + (0.14f * (1f - beautyFactor * 0.4f))
-            val beautyProcessed = applyBilateralAndDetailPass(upscaled, smoothThreshold, detailAmount)
+            val colorFactor = colorBoostVal / 100f
+            val brightShift = (brightnessVal - 50) * 0.90f
+            val detailAmount = (clarityVal / 100f) * 0.65f
+            val smoothThreshold = (14 + (42 * beautyFactor)).roundToInt()
 
-            val sat = 1.0f + (0.35f * (colorBoostVal / 100f))
-            val brightnessShift = ((brightnessVal - 50) * 0.85f) + (beautyFactor * 6f)
-            val contrast = 1.03f + (0.06f * (colorBoostVal / 100f))
-
-            val final2K = Bitmap.createBitmap(newW, newH, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(final2K)
-            val cm = ColorMatrix().apply { setSaturation(sat) }
-            cm.postConcat(
-                ColorMatrix(
-                    floatArrayOf(
-                        contrast, 0f, 0f, 0f, brightnessShift,
-                        0f, contrast, 0f, 0f, brightnessShift,
-                        0f, 0f, contrast, 0f, brightnessShift,
-                        0f, 0f, 0f, 1f, 0f
-                    )
-                )
+            val processed = applyFourControlStudioEngine(
+                upscaled,
+                smoothThreshold,
+                detailAmount,
+                beautyFactor,
+                colorFactor,
+                brightShift
             )
-            val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
-                colorFilter = ColorMatrixColorFilter(cm)
-            }
-            canvas.drawBitmap(beautyProcessed, 0f, 0f, paint)
 
             mainHandler.post {
-                enhancedBitmap = final2K
+                enhancedBitmap = processed
                 beforeAfterView.beforeBitmap = src
-                beforeAfterView.afterBitmap = final2K
+                beforeAfterView.afterBitmap = processed
                 beforeAfterView.invalidate()
                 progressOverlay.visibility = View.GONE
             }
         }
     }
 
-    private fun applyBilateralAndDetailPass(src: Bitmap, threshold: Int, detailAmount: Float): Bitmap {
+    private fun applyFourControlStudioEngine(
+        src: Bitmap,
+        threshold: Int,
+        detailAmount: Float,
+        beautyFactor: Float,
+        colorFactor: Float,
+        brightShift: Float
+    ): Bitmap {
         val w = src.width
         val h = src.height
         val pixels = IntArray(w * h)
         src.getPixels(pixels, 0, w, 0, 0, w, h)
         val smoothPixels = pixels.copyOf()
 
+        // Pass 1: Edge-Preserving Skin Smoothing
         for (y in 1 until h - 1) {
             val row = y * w
             for (x in 1 until w - 1) {
@@ -554,7 +665,10 @@ class MainActivity : AppCompatActivity() {
                 var sumB = cB * 2
                 var weightSum = 2
 
-                val neighbors = intArrayOf(idx - w, idx + w, idx - 1, idx + 1)
+                val neighbors = intArrayOf(
+                    idx - w, idx + w, idx - 1, idx + 1,
+                    idx - w - 1, idx - w + 1, idx + w - 1, idx + w + 1
+                )
                 for (nIdx in neighbors) {
                     val nc = pixels[nIdx]
                     val nR = Color.red(nc)
@@ -572,30 +686,82 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val outPixels = smoothPixels.copyOf()
-        for (y in 1 until h - 1) {
+        // Pass 2: 4 Independent Controls (Clarity + Face Glow + Anti-Yellow Color + Brightness)
+        val outPixels = IntArray(w * h)
+        for (y in 0 until h) {
             val row = y * w
-            for (x in 1 until w - 1) {
+            for (x in 0 until w) {
                 val idx = row + x
                 val c = smoothPixels[idx]
-                val top = smoothPixels[idx - w]
-                val bot = smoothPixels[idx + w]
-                val left = smoothPixels[idx - 1]
-                val right = smoothPixels[idx + 1]
+                var r = Color.red(c).toFloat()
+                var g = Color.green(c).toFloat()
+                var b = Color.blue(c).toFloat()
 
-                val r = Color.red(c)
-                val g = Color.green(c)
-                val b = Color.blue(c)
+                // Control 4: Independent HD Clarity / Sharpness
+                if (detailAmount > 0.01f && y in 1 until h - 1 && x in 1 until w - 1) {
+                    val top = smoothPixels[idx - w]
+                    val bot = smoothPixels[idx + w]
+                    val left = smoothPixels[idx - 1]
+                    val right = smoothPixels[idx + 1]
+                    val avgR = (Color.red(top) + Color.red(bot) + Color.red(left) + Color.red(right)) * 0.25f
+                    val avgG = (Color.green(top) + Color.green(bot) + Color.green(left) + Color.green(right)) * 0.25f
+                    val avgB = (Color.blue(top) + Color.blue(bot) + Color.blue(left) + Color.blue(right)) * 0.25f
 
-                val avgR = (Color.red(top) + Color.red(bot) + Color.red(left) + Color.red(right)) shr 2
-                val avgG = (Color.green(top) + Color.green(bot) + Color.green(left) + Color.green(right)) shr 2
-                val avgB = (Color.blue(top) + Color.blue(bot) + Color.blue(left) + Color.blue(right)) shr 2
+                    r += (r - avgR) * detailAmount
+                    g += (g - avgG) * detailAmount
+                    b += (b - avgB) * detailAmount
+                }
 
-                val newR = (r + ((r - avgR) * detailAmount)).roundToInt().coerceIn(0, 255)
-                val newG = (g + ((g - avgG) * detailAmount)).roundToInt().coerceIn(0, 255)
-                val newB = (b + ((b - avgB) * detailAmount)).roundToInt().coerceIn(0, 255)
+                // Skin Mask
+                val isGreen = g > r * 1.02f
+                val isBrightYellow = (r > 145f && g > 110f && b < 80f && (g - b) > 50f)
+                val isBlueSky = b > r * 1.05f
+                val skinWeight: Float = if (isGreen || isBrightYellow || isBlueSky || r < 35f) {
+                    0.0f
+                } else {
+                    val rgDiff = (r - g).coerceIn(0f, 80f) / 40f
+                    val gbDiff = (g - b).coerceIn(-10f, 70f) / 35f
+                    (min(rgDiff, gbDiff) * 1.2f).coerceIn(0.15f, 1.0f)
+                }
 
-                outPixels[idx] = Color.rgb(newR, newG, newB)
+                // Control 2: Face Beauty Glow (Gamma Lift + Cool Pink-White Glow)
+                if (beautyFactor > 0.01f && skinWeight > 0.05f) {
+                    val glowStrength = (beautyFactor * skinWeight).coerceIn(0f, 1f)
+                    val gamma = 1.0f - (glowStrength * 0.34f)
+                    var nr = 255f * (r.coerceIn(0f, 255f) / 255f).pow(gamma)
+                    var ng = 255f * (g.coerceIn(0f, 255f) / 255f).pow(gamma)
+                    var nb = 255f * (b.coerceIn(0f, 255f) / 255f).pow(gamma)
+
+                    val screenFactor = glowStrength * 0.26f
+                    nr += (255f - nr) * screenFactor
+                    ng += (255f - ng) * (screenFactor * 1.03f)
+                    nb += (255f - nb) * (screenFactor * 1.18f)
+
+                    r = nr
+                    g = ng
+                    b = nb
+                }
+
+                // Control 1: Color Boost (Rich colors without yellowing skin)
+                if (colorFactor > 0.01f) {
+                    val gray = 0.299f * r + 0.587f * g + 0.114f * b
+                    val boostMask = 1f - (skinWeight * 0.90f)
+                    val satBoost = 1f + (colorFactor * 0.50f * boostMask)
+                    r = gray + (r - gray) * satBoost
+                    g = gray + (g - gray) * satBoost
+                    b = gray + (b - gray) * satBoost
+                }
+
+                // Control 3: Light / Brightness
+                r += brightShift
+                g += brightShift
+                b += brightShift
+
+                outPixels[idx] = Color.rgb(
+                    r.roundToInt().coerceIn(0, 255),
+                    g.roundToInt().coerceIn(0, 255),
+                    b.roundToInt().coerceIn(0, 255)
+                )
             }
         }
 
